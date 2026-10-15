@@ -9,9 +9,6 @@ from functools import partial
 from typing import Any
 
 import aiohttp
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
-import snowflake.connector
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, __version__ as HA_VERSION
@@ -28,61 +25,19 @@ from .const import (
     DOMAIN,
     SYNC_MODE_ALL,
 )
-from .exporter import async_write_entity_states, ensure_entity_states_table
-from .streaming import SnowflakeStreamingClient
+from .exporter import async_write_entity_states
+from .streaming import SnowflakeRestClient
 
 PLATFORMS = [Platform.SENSOR]
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _get_connection(data: dict[str, Any], pk_der: bytes) -> snowflake.connector.SnowflakeConnection:
-    return snowflake.connector.connect(
-        account=data["account"],
-        user=data["user"],
-        private_key=pk_der,
-        database=data["database"],
-        schema=data["schema"],
-        warehouse=data["warehouse"],
-        login_timeout=10,
-    )
-
-
 def _fqn(data: dict[str, Any], table: str) -> str:
     return f"{data['database']}.{data['schema']}.{table}"
 
 
-def _write_ha_config(
-    data: dict[str, Any], pk_der: bytes, hass_config: dict[str, Any]
-) -> None:
-    conn = _get_connection(data, pk_der)
-    table = _fqn(data, "HA_CONFIGURATION")
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"CREATE TABLE IF NOT EXISTS {table} ("
-            "  home_name VARCHAR NOT NULL,"
-            "  attributes VARIANT,"
-            "  updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()"
-            ")"
-        )
-        cur.execute(
-            f"MERGE INTO {table} t "
-            "USING (SELECT %s AS home_name, PARSE_JSON(%s) AS attributes) s "
-            "ON t.home_name = s.home_name "
-            "WHEN MATCHED THEN UPDATE SET "
-            "  t.attributes = s.attributes, t.updated_at = CURRENT_TIMESTAMP() "
-            "WHEN NOT MATCHED THEN INSERT (home_name, attributes) "
-            "  VALUES (s.home_name, s.attributes)",
-            (hass_config["home_name"], json.dumps(hass_config["attributes"])),
-        )
-        cur.close()
-    finally:
-        conn.close()
-
-
 def _collect_states(hass: HomeAssistant, entry: ConfigEntry) -> list[dict[str, Any]]:
-    """Collect current entity states based on sync mode config."""
     data = entry.data
     sync_mode = data.get(CONF_SYNC_MODE, SYNC_MODE_ALL)
 
@@ -106,8 +61,67 @@ def _collect_states(hass: HomeAssistant, entry: ConfigEntry) -> list[dict[str, A
     return states
 
 
+async def _async_ddl_setup(
+    client: SnowflakeRestClient,
+    session: aiohttp.ClientSession,
+    data: dict[str, Any],
+    ha_config_payload: dict[str, Any],
+) -> None:
+    """Create tables and write HA config via SQL API (non-blocking)."""
+    config_table = _fqn(data, "HA_CONFIGURATION")
+    states_table = _fqn(data, "HA_ENTITY_STATES")
+
+    try:
+        await client.execute_sql(
+            session,
+            f"CREATE TABLE IF NOT EXISTS {config_table} ("
+            "  home_name VARCHAR NOT NULL,"
+            "  attributes VARIANT,"
+            "  updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP())",
+            database=data["database"],
+            schema=data["schema"],
+            warehouse=data["warehouse"],
+        )
+        home_name = ha_config_payload["home_name"].replace("'", "''")
+        attrs_json = json.dumps(ha_config_payload["attributes"]).replace("'", "''")
+        await client.execute_sql(
+            session,
+            f"MERGE INTO {config_table} t "
+            f"USING (SELECT '{home_name}' AS home_name, "
+            f"PARSE_JSON('{attrs_json}') AS attributes) s "
+            "ON t.home_name = s.home_name "
+            "WHEN MATCHED THEN UPDATE SET "
+            "  t.attributes = s.attributes, t.updated_at = CURRENT_TIMESTAMP() "
+            "WHEN NOT MATCHED THEN INSERT (home_name, attributes) "
+            "  VALUES (s.home_name, s.attributes)",
+            database=data["database"],
+            schema=data["schema"],
+            warehouse=data["warehouse"],
+        )
+        _LOGGER.info("Wrote HA configuration to Snowflake")
+    except Exception:
+        _LOGGER.exception("Failed to write HA configuration to Snowflake")
+
+    try:
+        await client.execute_sql(
+            session,
+            f"CREATE TABLE IF NOT EXISTS {states_table} ("
+            "  entity_id       VARCHAR NOT NULL,"
+            "  state           VARCHAR,"
+            "  attributes      VARIANT,"
+            "  last_changed    TIMESTAMP_NTZ,"
+            "  last_updated    TIMESTAMP_NTZ,"
+            "  replicated_at   TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP())",
+            database=data["database"],
+            schema=data["schema"],
+            warehouse=data["warehouse"],
+        )
+        _LOGGER.info("Ensured HA_ENTITY_STATES table exists")
+    except Exception:
+        _LOGGER.exception("Failed to create HA_ENTITY_STATES table")
+
+
 async def _async_replicate(hass: HomeAssistant, entry: ConfigEntry, _now=None) -> None:
-    """Replicate entity states to Snowflake via Streaming REST API."""
     entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if not entry_data:
         return
@@ -120,7 +134,7 @@ async def _async_replicate(hass: HomeAssistant, entry: ConfigEntry, _now=None) -
     states = _collect_states(hass, entry)
     try:
         count = await async_write_entity_states(
-            entry_data["streaming_client"],
+            entry_data["client"],
             entry_data["http_session"],
             entry.data,
             states,
@@ -144,38 +158,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     data = entry.data
-    _LOGGER.info("Snowflake Exporter: setup starting for %s", data.get("account"))
-    pk = load_pem_private_key(data[CONF_PRIVATE_KEY].encode(), password=None)
-    pk_der = pk.private_bytes(
-        serialization.Encoding.DER,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    )
-    conn_factory = partial(_get_connection, data, pk_der)
+    _LOGGER.info("Snowflake Exporter: setting up for %s", data.get("account"))
 
-    # Migrate: fetch account locator if missing from older config entries
-    if CONF_ACCOUNT_LOCATOR not in data:
-        try:
-            def _get_locator():
-                conn = conn_factory()
-                cur = conn.cursor()
-                cur.execute("SELECT CURRENT_ACCOUNT()")
-                locator = cur.fetchone()[0]
-                cur.close()
-                conn.close()
-                return locator
-
-            locator = await hass.async_add_executor_job(_get_locator)
-            hass.config_entries.async_update_entry(
-                entry, data={**data, CONF_ACCOUNT_LOCATOR: locator}
-            )
-            data = entry.data
-            _LOGGER.info("Stored account locator %s for streaming API", locator)
-        except Exception:
-            _LOGGER.exception("Failed to fetch account locator")
-
-    # Create streaming client and HTTP session
-    streaming_client = SnowflakeStreamingClient(
+    client = SnowflakeRestClient(
         account=data["account"],
         account_locator=data.get(CONF_ACCOUNT_LOCATOR, data["account"]),
         user=data["user"],
@@ -185,8 +170,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN][entry.entry_id] = {
         "config": data,
-        "private_key_der": pk_der,
-        "streaming_client": streaming_client,
+        "client": client,
         "http_session": http_session,
         "repl_started": None,
         "repl_finished": None,
@@ -196,38 +180,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
-    # DDL: create tables and write config via connector (background, non-blocking)
-    async def _async_ddl_setup():
-        ha_config = hass.config
-        config_payload = {
-            "home_name": ha_config.location_name,
-            "attributes": {
-                "ha_version": HA_VERSION,
-                "time_zone": str(ha_config.time_zone),
-                "latitude": ha_config.latitude,
-                "longitude": ha_config.longitude,
-                "elevation": ha_config.elevation,
-                "unit_system": str(ha_config.units),
-                "currency": ha_config.currency,
-                "country": ha_config.country,
-                "language": ha_config.language,
-            },
-        }
-        try:
-            await hass.async_add_executor_job(
-                _write_ha_config, data, pk_der, config_payload
-            )
-            _LOGGER.info("Wrote HA configuration to Snowflake")
-        except Exception:
-            _LOGGER.exception("Failed to write HA configuration to Snowflake")
-
-        try:
-            await hass.async_add_executor_job(ensure_entity_states_table, conn_factory, data)
-            _LOGGER.info("Ensured HA_ENTITY_STATES table exists")
-        except Exception:
-            _LOGGER.exception("Failed to create HA_ENTITY_STATES table")
-
-    hass.async_create_task(_async_ddl_setup())
+    # DDL setup (background, non-blocking)
+    ha_config = hass.config
+    config_payload = {
+        "home_name": ha_config.location_name,
+        "attributes": {
+            "ha_version": HA_VERSION,
+            "time_zone": str(ha_config.time_zone),
+            "latitude": ha_config.latitude,
+            "longitude": ha_config.longitude,
+            "elevation": ha_config.elevation,
+            "unit_system": str(ha_config.units),
+            "currency": ha_config.currency,
+            "country": ha_config.country,
+            "language": ha_config.language,
+        },
+    }
+    hass.async_create_task(
+        _async_ddl_setup(client, http_session, data, config_payload)
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

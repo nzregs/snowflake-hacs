@@ -1,4 +1,4 @@
-"""Snowpipe Streaming Elastic Channel REST API client."""
+"""Snowflake REST API client for SQL API and Snowpipe Streaming."""
 
 from __future__ import annotations
 
@@ -10,25 +10,22 @@ from base64 import b64encode
 from typing import Any
 
 import aiohttp
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 import jwt
 
 _LOGGER = logging.getLogger(__name__)
 
-# Scoped tokens are valid for ~60 min; refresh at 50 min
 _TOKEN_REFRESH_MARGIN = 50 * 60
 
 
-class SnowflakeStreamingClient:
-    """Async client for Snowpipe Streaming Elastic Channel REST API."""
+class SnowflakeRestClient:
+    """Async client for Snowflake SQL API and Snowpipe Streaming."""
 
     def __init__(self, account: str, account_locator: str, user: str, private_key_pem: str) -> None:
         self._account = account.upper()
         self._account_locator = account_locator.upper()
         self._user = user.upper()
-        self._private_key_pem = private_key_pem
         self._private_key = load_pem_private_key(
             private_key_pem.encode(), password=None
         )
@@ -38,7 +35,6 @@ class SnowflakeStreamingClient:
         self._token_expires: float = 0
 
     def _get_public_key_fingerprint(self) -> str:
-        """SHA-256 fingerprint of the public key in Snowflake format."""
         pub_der = self._private_key.public_key().public_bytes(
             serialization.Encoding.DER,
             serialization.PublicFormat.SubjectPublicKeyInfo,
@@ -47,12 +43,10 @@ class SnowflakeStreamingClient:
         return "SHA256:" + b64encode(digest).decode()
 
     def _generate_jwt(self) -> str:
-        """Generate a JWT for Snowflake key-pair auth."""
         now = int(time.time())
         fingerprint = self._get_public_key_fingerprint()
         qualified_user = f"{self._account_locator}.{self._user}"
         issuer = f"{qualified_user}.{fingerprint}"
-
         payload = {
             "iss": issuer,
             "sub": qualified_user,
@@ -61,11 +55,44 @@ class SnowflakeStreamingClient:
         }
         return jwt.encode(payload, self._private_key, algorithm="RS256")
 
+    # ── SQL API (/api/v2/statements) ──
+
+    async def execute_sql(
+        self,
+        session: aiohttp.ClientSession,
+        statement: str,
+        database: str | None = None,
+        schema: str | None = None,
+        warehouse: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a SQL statement via the Snowflake SQL API. Returns the response JSON."""
+        jwt_token = self._generate_jwt()
+        url = f"{self._account_url}/api/v2/statements"
+        body: dict[str, Any] = {"statement": statement, "timeout": 60}
+        if database:
+            body["database"] = database
+        if schema:
+            body["schema"] = schema
+        if warehouse:
+            body["warehouse"] = warehouse
+        headers = {
+            "Authorization": f"Bearer {jwt_token}",
+            "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        async with session.post(url, headers=headers, json=body) as resp:
+            result = await resp.json()
+            if resp.status != 200:
+                msg = result.get("message", f"SQL API error {resp.status}")
+                raise RuntimeError(msg)
+            return result
+
+    # ── Snowpipe Streaming (Elastic Channel) ──
+
     async def _get_ingest_host(self, session: aiohttp.ClientSession) -> str:
-        """Get the streaming ingest hostname (cached)."""
         if self._ingest_host:
             return self._ingest_host
-
         jwt_token = self._generate_jwt()
         url = f"{self._account_url}/v2/streaming/hostname"
         headers = {
@@ -76,20 +103,16 @@ class SnowflakeStreamingClient:
         async with session.get(url, headers=headers) as resp:
             resp.raise_for_status()
             host = (await resp.text()).strip()
-            # Replace underscores with dashes per Snowflake docs
             self._ingest_host = host.replace("_", "-")
             _LOGGER.debug("Streaming ingest host: %s", self._ingest_host)
             return self._ingest_host
 
     async def _get_scoped_token(self, session: aiohttp.ClientSession) -> str:
-        """Exchange JWT for a scoped streaming token (cached with TTL)."""
         now = time.time()
         if self._scoped_token and now < self._token_expires:
             return self._scoped_token
-
         ingest_host = await self._get_ingest_host(session)
         jwt_token = self._generate_jwt()
-        # Token exchange goes to the account (control) URL, not the ingest host
         url = f"{self._account_url}/oauth/token"
         headers = {
             "Authorization": f"Bearer {jwt_token}",
@@ -104,7 +127,6 @@ class SnowflakeStreamingClient:
         async with session.post(url, headers=headers, data=data) as resp:
             resp.raise_for_status()
             body = await resp.text()
-            # Response may be raw token text or JSON {"token": "..."}
             try:
                 parsed = json.loads(body)
                 self._scoped_token = parsed["token"]
@@ -122,19 +144,12 @@ class SnowflakeStreamingClient:
         table: str,
         rows: list[dict[str, Any]],
     ) -> int:
-        """Send rows via Elastic Channel. Returns count of rows sent."""
         if not rows:
             return 0
-
         ingest_host = await self._get_ingest_host(session)
         token = await self._get_scoped_token(session)
-
-        # Build NDJSON payload
-        ndjson_lines = []
-        for row in rows:
-            ndjson_lines.append(json.dumps(row, default=str))
+        ndjson_lines = [json.dumps(row, default=str) for row in rows]
         payload = "\n".join(ndjson_lines) + "\n"
-
         url = (
             f"https://{ingest_host}/v2/streaming/data"
             f"/databases/{database}/schemas/{schema}"
@@ -148,8 +163,6 @@ class SnowflakeStreamingClient:
         async with session.post(url, headers=headers, data=payload.encode()) as resp:
             if resp.status != 200:
                 body = await resp.text()
-                raise RuntimeError(
-                    f"Streaming insert failed ({resp.status}): {body}"
-                )
+                raise RuntimeError(f"Streaming insert failed ({resp.status}): {body}")
             _LOGGER.debug("Streamed %d rows to %s.%s.%s", len(rows), database, schema, table)
             return len(rows)

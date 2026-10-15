@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import aiohttp
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-import snowflake.connector
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
@@ -30,10 +30,12 @@ from .const import (
     SYNC_MODE_ALL,
     SYNC_MODE_SELECTED,
 )
+from .streaming import SnowflakeRestClient
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required("account"): str,
+        vol.Required(CONF_ACCOUNT_LOCATOR): str,
         vol.Required("user"): str,
         vol.Required("database"): str,
         vol.Required("schema", default="PUBLIC"): str,
@@ -64,6 +66,39 @@ STEP_SELECT_ENTITIES_SCHEMA = vol.Schema(
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def _test_snowflake_connection(
+    data: dict[str, Any], private_key_pem: str
+) -> str | None:
+    """Test Snowflake connection via SQL API. Returns error key or None."""
+    client = SnowflakeRestClient(
+        account=data["account"],
+        account_locator=data[CONF_ACCOUNT_LOCATOR],
+        user=data["user"],
+        private_key_pem=private_key_pem,
+    )
+    try:
+        async with aiohttp.ClientSession() as session:
+            result = await client.execute_sql(
+                session,
+                "SELECT 1",
+                database=data["database"],
+                schema=data["schema"],
+                warehouse=data["warehouse"],
+            )
+            if result.get("code") and result["code"] != "090001":
+                return "cannot_connect"
+    except RuntimeError as err:
+        msg = str(err)
+        _LOGGER.debug("Snowflake SQL API error: %s", msg)
+        if "JWT token" in msg or "390144" in msg:
+            return "invalid_auth"
+        return "cannot_connect"
+    except Exception:
+        _LOGGER.exception("Unexpected error connecting to Snowflake")
+        return "unknown"
+    return None
 
 
 class SnowflakeExporterConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -98,51 +133,6 @@ class SnowflakeExporterConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         self._user_input[CONF_PRIVATE_KEY] = private_pem
 
-    async def _test_connection(self, data: dict[str, Any]) -> tuple[str | None, str | None]:
-        """Test connection. Returns (error, account_locator)."""
-        try:
-
-            def _connect() -> str:
-                from cryptography.hazmat.primitives.serialization import (
-                    load_pem_private_key,
-                )
-
-                pk = load_pem_private_key(
-                    data[CONF_PRIVATE_KEY].encode(), password=None
-                )
-                pk_bytes = pk.private_bytes(
-                    serialization.Encoding.DER,
-                    serialization.PrivateFormat.PKCS8,
-                    serialization.NoEncryption(),
-                )
-                conn = snowflake.connector.connect(
-                    account=data["account"],
-                    user=data["user"],
-                    private_key=pk_bytes,
-                    database=data["database"],
-                    schema=data["schema"],
-                    warehouse=data["warehouse"],
-                    login_timeout=10,
-                )
-                cur = conn.cursor()
-                cur.execute("SELECT CURRENT_ACCOUNT()")
-                locator = cur.fetchone()[0]
-                cur.close()
-                conn.close()
-                return locator
-
-            locator = await self.hass.async_add_executor_job(_connect)
-            return None, locator
-        except snowflake.connector.errors.DatabaseError as err:
-            _LOGGER.debug("Snowflake connection failed: %s", err)
-            msg = str(err)
-            if "JWT token" in msg or "authentication" in msg.lower():
-                return "invalid_auth", None
-            return "cannot_connect", None
-        except Exception:
-            _LOGGER.exception("Unexpected error connecting to Snowflake")
-            return "unknown", None
-
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -166,11 +156,12 @@ class SnowflakeExporterConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            error, locator = await self._test_connection(self._user_input)
+            error = await _test_snowflake_connection(
+                self._user_input, self._user_input[CONF_PRIVATE_KEY]
+            )
             if error:
                 errors["base"] = error
             else:
-                self._user_input[CONF_ACCOUNT_LOCATOR] = locator
                 return await self.async_step_sync_mode()
 
         alter_sql = (
@@ -232,16 +223,15 @@ class SnowflakeExporterOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Build updated data with changed connection params
             self._updated_data = {**self._config_entry.data, **user_input}
-            # Test connection with updated params + existing private key
-            error = await self._test_connection(self._updated_data)
+            error = await _test_snowflake_connection(
+                self._updated_data, self._updated_data[CONF_PRIVATE_KEY]
+            )
             if error:
                 errors["base"] = error
             else:
                 if user_input.get(CONF_SYNC_MODE) == SYNC_MODE_SELECTED:
                     return await self.async_step_select_entities()
-                # "All" mode — clear any previously selected entity list
                 self._updated_data.pop(CONF_ENTITIES, None)
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
@@ -304,42 +294,3 @@ class SnowflakeExporterOptionsFlow(OptionsFlow):
             step_id="select_entities",
             data_schema=schema,
         )
-
-    async def _test_connection(self, data: dict[str, Any]) -> str | None:
-        try:
-
-            def _connect() -> None:
-                from cryptography.hazmat.primitives.serialization import (
-                    load_pem_private_key,
-                )
-
-                pk = load_pem_private_key(
-                    data[CONF_PRIVATE_KEY].encode(), password=None
-                )
-                pk_bytes = pk.private_bytes(
-                    serialization.Encoding.DER,
-                    serialization.PrivateFormat.PKCS8,
-                    serialization.NoEncryption(),
-                )
-                conn = snowflake.connector.connect(
-                    account=data["account"],
-                    user=data["user"],
-                    private_key=pk_bytes,
-                    database=data["database"],
-                    schema=data["schema"],
-                    warehouse=data["warehouse"],
-                    login_timeout=10,
-                )
-                conn.close()
-
-            await self.hass.async_add_executor_job(_connect)
-        except snowflake.connector.errors.DatabaseError as err:
-            _LOGGER.debug("Snowflake connection failed: %s", err)
-            msg = str(err)
-            if "JWT token" in msg or "authentication" in msg.lower():
-                return "invalid_auth"
-            return "cannot_connect"
-        except Exception:
-            _LOGGER.exception("Unexpected error connecting to Snowflake")
-            return "unknown"
-        return None

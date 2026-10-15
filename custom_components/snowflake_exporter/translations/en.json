@@ -3,8 +3,10 @@
     "step": {
       "user": {
         "title": "Connect to Snowflake",
+        "description": "Enter your Snowflake connection details. The Account Locator can be found under Admin > Accounts in Snowflake.",
         "data": {
-          "account": "Account Identifier",
+          "account": "Account Identifier (e.g. ORGNAME-ACCOUNT)",
+          "account_locator": "Account Locator (e.g. EB59385)",
           "user": "Username",
           "database": "Database",
           "schema": "Schema",
@@ -34,7 +36,7 @@
       "already_configured": "This Snowflake account and database is already configured."
     },
     "error": {
-      "cannot_connect": "Unable to connect to Snowflake. Check your account identifier and network.",
+      "cannot_connect": "Unable to connect to Snowflake. Check your account identifier, locator, and network.",
       "invalid_auth": "Authentication failed. Verify the public key has been set on the Snowflake user.",
       "unknown": "An unexpected error occurred."
     }

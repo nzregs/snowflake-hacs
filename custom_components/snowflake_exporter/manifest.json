@@ -6,6 +6,6 @@
   "documentation": "https://github.com/nzregs/hacs-custom-integrations",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/nzregs/hacs-custom-integrations/issues",
-  "requirements": ["snowflake-connector-python==4.8.0", "PyJWT[crypto]>=2.8.0"],
+  "requirements": ["PyJWT[crypto]>=2.8.0"],
   "version": "0.1.0"
 }
