@@ -1,11 +1,11 @@
 {
   "domain": "snowflake_exporter",
   "name": "Snowflake Exporter",
-  "codeowners": ["@rmurphy"],
+  "codeowners": ["@nzregs"],
   "config_flow": true,
-  "documentation": "https://github.com/rmurphy/snowflake-exporter",
+  "documentation": "https://github.com/nzregs/hacs-custom-integrations",
   "iot_class": "cloud_push",
-  "issue_tracker": "https://github.com/rmurphy/snowflake-exporter/issues",
-  "requirements": ["snowflake-connector-python==3.12.3"],
+  "issue_tracker": "https://github.com/nzregs/hacs-custom-integrations/issues",
+  "requirements": ["snowflake-connector-python==4.8.0"],
   "version": "0.1.0"
 }

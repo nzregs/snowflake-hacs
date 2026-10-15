@@ -6,11 +6,14 @@
         "data": {
           "account": "Account Identifier",
           "user": "Username",
-          "password": "Password",
           "database": "Database",
           "schema": "Schema",
           "warehouse": "Warehouse"
         }
+      },
+      "show_public_key": {
+        "title": "Set Public Key in Snowflake",
+        "description": "Run the following SQL in your Snowflake account to register the public key, then click Submit:\n\n`{alter_sql}`"
       },
       "sync_mode": {
         "title": "Entity Sync Mode",
@@ -29,6 +32,39 @@
     },
     "abort": {
       "already_configured": "This Snowflake account and database is already configured."
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to Snowflake. Check your account identifier and network.",
+      "invalid_auth": "Authentication failed. Verify the public key has been set on the Snowflake user.",
+      "unknown": "An unexpected error occurred."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Snowflake Exporter Options",
+        "description": "Update your Snowflake connection settings, sync interval, and entity selection.",
+        "data": {
+          "user": "Username",
+          "database": "Database",
+          "schema": "Schema",
+          "warehouse": "Warehouse",
+          "sync_interval": "Default Synchronisation (minutes)",
+          "sync_mode": "Sync mode"
+        }
+      },
+      "select_entities": {
+        "title": "Select Entities",
+        "description": "Choose which entities to replicate to Snowflake.",
+        "data": {
+          "entities": "Entities"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to Snowflake. Check your settings and network.",
+      "invalid_auth": "Authentication failed. Verify the public key is set for this user.",
+      "unknown": "An unexpected error occurred."
     }
   }
 }

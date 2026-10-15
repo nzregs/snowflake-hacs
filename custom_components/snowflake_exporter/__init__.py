@@ -1,17 +1,214 @@
 """The Snowflake Exporter integration."""
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from __future__ import annotations
 
-from .const import DOMAIN
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from functools import partial
+from typing import Any
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+import snowflake.connector
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform, __version__ as HA_VERSION
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_interval
+
+from .const import (
+    CONF_ENTITIES,
+    CONF_PRIVATE_KEY,
+    CONF_SYNC_INTERVAL,
+    CONF_SYNC_MODE,
+    DEFAULT_SYNC_INTERVAL,
+    DOMAIN,
+    SYNC_MODE_ALL,
+)
+from .exporter import write_entity_states
+
+PLATFORMS = [Platform.SENSOR]
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _get_connection(data: dict[str, Any], pk_der: bytes) -> snowflake.connector.SnowflakeConnection:
+    return snowflake.connector.connect(
+        account=data["account"],
+        user=data["user"],
+        private_key=pk_der,
+        database=data["database"],
+        schema=data["schema"],
+        warehouse=data["warehouse"],
+        login_timeout=10,
+    )
+
+
+def _fqn(data: dict[str, Any], table: str) -> str:
+    return f"{data['database']}.{data['schema']}.{table}"
+
+
+def _write_ha_config(
+    data: dict[str, Any], pk_der: bytes, hass_config: dict[str, Any]
+) -> None:
+    conn = _get_connection(data, pk_der)
+    table = _fqn(data, "HA_CONFIGURATION")
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"CREATE TABLE IF NOT EXISTS {table} ("
+            "  home_name VARCHAR NOT NULL,"
+            "  attributes VARIANT,"
+            "  updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()"
+            ")"
+        )
+        cur.execute(
+            f"MERGE INTO {table} t "
+            "USING (SELECT %s AS home_name, PARSE_JSON(%s) AS attributes) s "
+            "ON t.home_name = s.home_name "
+            "WHEN MATCHED THEN UPDATE SET "
+            "  t.attributes = s.attributes, t.updated_at = CURRENT_TIMESTAMP() "
+            "WHEN NOT MATCHED THEN INSERT (home_name, attributes) "
+            "  VALUES (s.home_name, s.attributes)",
+            (hass_config["home_name"], json.dumps(hass_config["attributes"])),
+        )
+        cur.close()
+    finally:
+        conn.close()
+
+
+def _collect_states(hass: HomeAssistant, entry: ConfigEntry) -> list[dict[str, Any]]:
+    """Collect current entity states based on sync mode config."""
+    data = entry.data
+    sync_mode = data.get(CONF_SYNC_MODE, SYNC_MODE_ALL)
+
+    if sync_mode == SYNC_MODE_ALL:
+        entity_ids = list(hass.states.async_entity_ids())
+    else:
+        entity_ids = data.get(CONF_ENTITIES, [])
+
+    states = []
+    for eid in entity_ids:
+        state = hass.states.get(eid)
+        if state is None:
+            continue
+        states.append({
+            "entity_id": eid,
+            "state": state.state,
+            "attributes": dict(state.attributes),
+            "last_changed": state.last_changed.isoformat(),
+            "last_updated": state.last_updated.isoformat(),
+        })
+    return states
+
+
+async def _async_replicate(hass: HomeAssistant, entry: ConfigEntry, _now=None) -> None:
+    """Replicate entity states to Snowflake."""
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if not entry_data:
+        return
+
+    started = datetime.now(timezone.utc)
+    entry_data["repl_started"] = started
+    entry_data["repl_status"] = "Running"
+    entry_data["repl_message"] = "Replication in progress..."
+
+    data = entry.data
+    pk_der = entry_data["private_key_der"]
+    conn_factory = partial(_get_connection, data, pk_der)
+
+    states = _collect_states(hass, entry)
+    try:
+        count = await hass.async_add_executor_job(
+            write_entity_states, conn_factory, data, states
+        )
+        finished = datetime.now(timezone.utc)
+        entry_data["repl_finished"] = finished
+        entry_data["repl_status"] = "Success"
+        entry_data["repl_message"] = (
+            f"Inserted {count} records for {len(states)} entities"
+        )
+        _LOGGER.info("Replicated %d entity states to Snowflake", count)
+    except Exception as err:
+        finished = datetime.now(timezone.utc)
+        entry_data["repl_finished"] = finished
+        entry_data["repl_status"] = "Failed"
+        entry_data["repl_message"] = str(err)[:255]
+        _LOGGER.exception("Failed to replicate entity states to Snowflake")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = entry.data
+
+    pk = load_pem_private_key(entry.data[CONF_PRIVATE_KEY].encode(), password=None)
+    pk_der = pk.private_bytes(
+        serialization.Encoding.DER,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+
+    hass.data[DOMAIN][entry.entry_id] = {
+        "config": entry.data,
+        "private_key_der": pk_der,
+        "last_replicated": None,
+        "last_replicated_count": 0,
+    }
+
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    ha_config = hass.config
+    config_payload = {
+        "home_name": ha_config.location_name,
+        "attributes": {
+            "ha_version": HA_VERSION,
+            "time_zone": str(ha_config.time_zone),
+            "latitude": ha_config.latitude,
+            "longitude": ha_config.longitude,
+            "elevation": ha_config.elevation,
+            "unit_system": str(ha_config.units),
+            "currency": ha_config.currency,
+            "country": ha_config.country,
+            "language": ha_config.language,
+        },
+    }
+
+    try:
+        await hass.async_add_executor_job(
+            _write_ha_config, entry.data, pk_der, config_payload
+        )
+        _LOGGER.info("Wrote HA configuration to Snowflake HA_CONFIGURATION table")
+    except Exception:
+        _LOGGER.exception("Failed to write HA configuration to Snowflake")
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Run first replication immediately
+    await _async_replicate(hass, entry)
+
+    # Schedule periodic replication
+    interval = entry.data.get(CONF_SYNC_INTERVAL, DEFAULT_SYNC_INTERVAL)
+    unsub = async_track_time_interval(
+        hass,
+        partial(_async_replicate, hass, entry),
+        timedelta(minutes=interval),
+    )
+    hass.data[DOMAIN][entry.entry_id]["unsub_timer"] = unsub
+
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    hass.data[DOMAIN].pop(entry.entry_id, None)
-    return True
+    # Cancel the replication timer
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if entry_data and "unsub_timer" in entry_data:
+        entry_data["unsub_timer"]()
+
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+    return unload_ok
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    await hass.config_entries.async_reload(entry.entry_id)
