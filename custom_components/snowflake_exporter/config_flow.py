@@ -20,6 +20,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_ACCOUNT_LOCATOR,
     CONF_ENTITIES,
     CONF_PRIVATE_KEY,
     CONF_SYNC_INTERVAL,
@@ -97,10 +98,11 @@ class SnowflakeExporterConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         self._user_input[CONF_PRIVATE_KEY] = private_pem
 
-    async def _test_connection(self, data: dict[str, Any]) -> str | None:
+    async def _test_connection(self, data: dict[str, Any]) -> tuple[str | None, str | None]:
+        """Test connection. Returns (error, account_locator)."""
         try:
 
-            def _connect() -> None:
+            def _connect() -> str:
                 from cryptography.hazmat.primitives.serialization import (
                     load_pem_private_key,
                 )
@@ -122,19 +124,24 @@ class SnowflakeExporterConfigFlow(ConfigFlow, domain=DOMAIN):
                     warehouse=data["warehouse"],
                     login_timeout=10,
                 )
+                cur = conn.cursor()
+                cur.execute("SELECT CURRENT_ACCOUNT()")
+                locator = cur.fetchone()[0]
+                cur.close()
                 conn.close()
+                return locator
 
-            await self.hass.async_add_executor_job(_connect)
+            locator = await self.hass.async_add_executor_job(_connect)
+            return None, locator
         except snowflake.connector.errors.DatabaseError as err:
             _LOGGER.debug("Snowflake connection failed: %s", err)
             msg = str(err)
             if "JWT token" in msg or "authentication" in msg.lower():
-                return "invalid_auth"
-            return "cannot_connect"
+                return "invalid_auth", None
+            return "cannot_connect", None
         except Exception:
             _LOGGER.exception("Unexpected error connecting to Snowflake")
-            return "unknown"
-        return None
+            return "unknown", None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -159,10 +166,11 @@ class SnowflakeExporterConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            error = await self._test_connection(self._user_input)
+            error, locator = await self._test_connection(self._user_input)
             if error:
                 errors["base"] = error
             else:
+                self._user_input[CONF_ACCOUNT_LOCATOR] = locator
                 return await self.async_step_sync_mode()
 
         alter_sql = (
