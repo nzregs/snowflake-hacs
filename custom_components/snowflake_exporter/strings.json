@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Snowflake",
+        "data": {
+          "account": "Account Identifier",
+          "user": "Username",
+          "password": "Password",
+          "database": "Database",
+          "schema": "Schema",
+          "warehouse": "Warehouse"
+        }
+      },
+      "sync_mode": {
+        "title": "Entity Sync Mode",
+        "description": "Choose whether to sync all Home Assistant entities or select specific ones.",
+        "data": {
+          "sync_mode": "Sync mode"
+        }
+      },
+      "select_entities": {
+        "title": "Select Entities",
+        "description": "Choose which entities to sync to Snowflake.",
+        "data": {
+          "entities": "Entities"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This Snowflake account and database is already configured."
+    }
+  }
+}

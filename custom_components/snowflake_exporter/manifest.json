@@ -1,0 +1,11 @@
+{
+  "domain": "snowflake_exporter",
+  "name": "Snowflake Exporter",
+  "codeowners": ["@rmurphy"],
+  "config_flow": true,
+  "documentation": "https://github.com/rmurphy/snowflake-exporter",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/rmurphy/snowflake-exporter/issues",
+  "requirements": ["snowflake-connector-python==3.12.3"],
+  "version": "0.1.0"
+}
