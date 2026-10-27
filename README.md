@@ -37,6 +37,7 @@ This guide will walk you through the steps to install and set up the Snowflake E
 - A **Snowflake account**, plus:
   - A Snowflake **user** for Home Assistant whose default role can use the warehouse, database and schema, and can create and insert into tables in that schema.
   - Your **account identifier** (e.g. `ORGNAME-ACCOUNT`) and **account locator** (found under **Admin > Accounts** in Snowsight).
+  - To create all of these in one go, edit the variables at the top of [`sql/setup_snowflake.sql`](sql/setup_snowflake.sql) (database, schema, user, role, network policy and allowed IPs) and run it in Snowsight. It sets up a key-pair-only service user, a role with the grants and future grants the integration needs, and a network policy that limits sign-in to your IP addresses.
 - Database, schema and warehouse names must be plain identifiers: start with a letter or underscore, and contain only letters, digits, `_` or `$`.
 
 ### **Step-by-Step Guide**
