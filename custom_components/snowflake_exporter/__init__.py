@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import Any
@@ -16,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
+    ATTRIBUTE_DENYLIST,
     CONF_ACCOUNT_LOCATOR,
     CONF_ENTITIES,
     CONF_PRIVATE_KEY,
@@ -23,6 +25,8 @@ from .const import (
     CONF_SYNC_MODE,
     DEFAULT_SYNC_INTERVAL,
     DOMAIN,
+    IDENTIFIER_FIELDS,
+    IDENTIFIER_PATTERN,
     SYNC_MODE_ALL,
 )
 from .exporter import async_write_entity_states
@@ -34,6 +38,9 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _fqn(data: dict[str, Any], table: str) -> str:
+    for field in IDENTIFIER_FIELDS:
+        if not re.fullmatch(IDENTIFIER_PATTERN, data[field]):
+            raise ValueError(f"Invalid Snowflake identifier for {field}: {data[field]!r}")
     return f"{data['database']}.{data['schema']}.{table}"
 
 
@@ -54,7 +61,10 @@ def _collect_states(hass: HomeAssistant, entry: ConfigEntry) -> list[dict[str, A
         states.append({
             "entity_id": eid,
             "state": state.state,
-            "attributes": dict(state.attributes),
+            "attributes": {
+                k: v for k, v in state.attributes.items()
+                if k not in ATTRIBUTE_DENYLIST
+            },
             "last_changed": state.last_changed.isoformat(),
             "last_updated": state.last_updated.isoformat(),
         })

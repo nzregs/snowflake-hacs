@@ -3,9 +3,9 @@
   "name": "Snowflake Exporter",
   "codeowners": ["@nzregs"],
   "config_flow": true,
-  "documentation": "https://github.com/nzregs/hacs-custom-integrations",
+  "documentation": "https://github.com/nzregs/snowflake-hacs",
   "iot_class": "cloud_push",
-  "issue_tracker": "https://github.com/nzregs/hacs-custom-integrations/issues",
+  "issue_tracker": "https://github.com/nzregs/snowflake-hacs/issues",
   "requirements": ["PyJWT[crypto]>=2.8.0"],
   "version": "0.1.0"
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import aiohttp
@@ -27,6 +28,8 @@ from .const import (
     CONF_SYNC_MODE,
     DEFAULT_SYNC_INTERVAL,
     DOMAIN,
+    IDENTIFIER_FIELDS,
+    IDENTIFIER_PATTERN,
     SYNC_MODE_ALL,
     SYNC_MODE_SELECTED,
 )
@@ -66,6 +69,15 @@ STEP_SELECT_ENTITIES_SCHEMA = vol.Schema(
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _validate_identifiers(data: dict[str, Any]) -> dict[str, str]:
+    """Return form errors for database/schema/warehouse values that aren't plain identifiers."""
+    return {
+        field: "invalid_identifier"
+        for field in IDENTIFIER_FIELDS
+        if field in data and not re.fullmatch(IDENTIFIER_PATTERN, data[field])
+    }
 
 
 async def _test_snowflake_connection(
@@ -136,7 +148,9 @@ class SnowflakeExporterConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        if user_input is not None:
+        errors: dict[str, str] = {}
+
+        if user_input is not None and not (errors := _validate_identifiers(user_input)):
             await self.async_set_unique_id(
                 f"{user_input['account']}_{user_input['database']}"
             )
@@ -147,7 +161,10 @@ class SnowflakeExporterConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_USER_DATA_SCHEMA, user_input or {}
+            ),
+            errors=errors,
         )
 
     async def async_step_show_public_key(
@@ -222,7 +239,7 @@ class SnowflakeExporterOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
 
-        if user_input is not None:
+        if user_input is not None and not (errors := _validate_identifiers(user_input)):
             self._updated_data = {**self._config_entry.data, **user_input}
             error = await _test_snowflake_connection(
                 self._updated_data, self._updated_data[CONF_PRIVATE_KEY]

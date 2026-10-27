@@ -38,7 +38,8 @@
     "error": {
       "cannot_connect": "Unable to connect to Snowflake. Check your account identifier, locator, and network.",
       "invalid_auth": "Authentication failed. Verify the public key has been set on the Snowflake user.",
-      "unknown": "An unexpected error occurred."
+      "unknown": "An unexpected error occurred.",
+      "invalid_identifier": "Must start with a letter or underscore and contain only letters, digits, _ or $."
     }
   },
   "options": {
@@ -66,7 +67,8 @@
     "error": {
       "cannot_connect": "Unable to connect to Snowflake. Check your settings and network.",
       "invalid_auth": "Authentication failed. Verify the public key is set for this user.",
-      "unknown": "An unexpected error occurred."
+      "unknown": "An unexpected error occurred.",
+      "invalid_identifier": "Must start with a letter or underscore and contain only letters, digits, _ or $."
     }
   }
 }

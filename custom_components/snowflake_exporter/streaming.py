@@ -8,6 +8,7 @@ import logging
 import time
 from base64 import b64encode
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 from cryptography.hazmat.primitives import serialization
@@ -152,8 +153,8 @@ class SnowflakeRestClient:
         payload = "\n".join(ndjson_lines) + "\n"
         url = (
             f"https://{ingest_host}/v2/streaming/data"
-            f"/databases/{database}/schemas/{schema}"
-            f"/tables/{table}/rows"
+            f"/databases/{quote(database, safe='')}/schemas/{quote(schema, safe='')}"
+            f"/tables/{quote(table, safe='')}/rows"
         )
         headers = {
             "Authorization": f"Bearer {token}",

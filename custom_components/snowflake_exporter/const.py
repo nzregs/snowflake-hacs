@@ -10,3 +10,9 @@ DEFAULT_SYNC_INTERVAL = 5
 
 SYNC_MODE_ALL = "all"
 SYNC_MODE_SELECTED = "selected"
+
+# State attributes never exported to Snowflake (they grant access to HA resources)
+ATTRIBUTE_DENYLIST = frozenset({"access_token", "entity_picture"})
+
+IDENTIFIER_FIELDS = ("database", "schema", "warehouse")
+IDENTIFIER_PATTERN = r"^[A-Za-z_][A-Za-z0-9_$]*$"
