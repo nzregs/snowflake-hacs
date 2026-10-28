@@ -1,9 +1,9 @@
 # Snowflake Exporter custom integration
 
-![GitHub Release](https://img.shields.io/github/release/nzregs/snowflake-hacs.svg?style=plastic) ![GitHub issues](https://img.shields.io/github/issues/nzregs/snowflake-hacs.svg?style=plastic) ![GitHub Stars](https://img.shields.io/github/stars/nzregs/snowflake-hacs.svg?style=plastic) ![GitHub Last Commit](https://img.shields.io/github/last-commit/nzregs/snowflake-hacs.svg?style=plastic) ![HACS Status](https://img.shields.io/badge/HACS-Custom-orange.svg?style=plastic) ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-%3E%3D%202024.1.0-brightgreen.svg?style=plastic)
+![GitHub Release](https://img.shields.io/github/release/nzregs/snowflake-hacs.svg?style=plastic) ![GitHub issues](https://img.shields.io/github/issues/nzregs/snowflake-hacs.svg?style=plastic) ![GitHub Stars](https://img.shields.io/github/stars/nzregs/snowflake-hacs.svg?style=plastic) ![GitHub Last Commit](https://img.shields.io/github/last-commit/nzregs/snowflake-hacs.svg?style=plastic) ![HACS Status](https://img.shields.io/badge/HACS-Custom-orange.svg?style=plastic) ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-%3E%3D%202026.3.0-brightgreen.svg?style=plastic)
 
 <p align="center">
-  <img src="custom_components/snowflake_exporter/icon@2x.png" alt="Snowflake Exporter" width="128">
+  <img src="custom_components/snowflake_exporter/brand/icon@2x.png" alt="Snowflake Exporter" width="128">
 </p>
 
 The Snowflake Exporter custom integration replicates Home Assistant entity states to a Snowflake table on a schedule, using key-pair authentication, the Snowflake SQL API, and Snowpipe Streaming.
@@ -48,7 +48,7 @@ This guide will walk you through the steps to install and set up the Snowflake E
 
 ### **Prerequisites**
 
-- **Home Assistant** 2024.1.0 or later must already be installed and configured on your system.
+- **Home Assistant** 2026.3.0 or later must already be installed and configured on your system.
 - **HACS** should be installed. If not, follow the instructions at [HACS Installation](https://www.hacs.xyz/docs/use/download/prerequisites/).
 - A **Snowflake account**, plus:
   - A Snowflake **user** for Home Assistant whose default role can use the warehouse, database and schema, and can create and insert into tables in that schema.
