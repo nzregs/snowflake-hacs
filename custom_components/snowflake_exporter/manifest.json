@@ -7,5 +7,5 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/nzregs/snowflake-hacs/issues",
   "requirements": ["PyJWT[crypto]>=2.8.0"],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
