@@ -133,10 +133,16 @@ def collect_registry(
         if device.area_id:
             area_ids.add(device.area_id)
         macs = [v for t, v in device.connections if t == dr.CONNECTION_NETWORK_MAC]
+        # HA 2026.x moved devices to a single config entry; config_entries is deprecated
+        device_entry_ids = (
+            [device.config_entry_id]
+            if hasattr(device, "config_entry_id")
+            else device.config_entries
+        )
         integrations = sorted({
             ce.domain
-            for ce_id in device.config_entries
-            if (ce := hass.config_entries.async_get_entry(ce_id))
+            for ce_id in device_entry_ids
+            if ce_id and (ce := hass.config_entries.async_get_entry(ce_id))
         })
         devices.append({
             "device_id": device.id,

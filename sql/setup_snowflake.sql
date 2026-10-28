@@ -63,13 +63,15 @@ GRANT ROLE IDENTIFIER($role_name) TO ROLE SYSADMIN;
 -- -----------------------------------------------------------------------------
 USE ROLE SECURITYADMIN;
 
-SET create_policy_sql =
+SET create_policy_sql = (SELECT
     'CREATE NETWORK POLICY IF NOT EXISTS ' || $policy_name ||
     ' ALLOWED_IP_LIST = (''' || REPLACE($allowed_ips, ',', ''',''') || ''')' ||
-    ' COMMENT = ''Home Assistant Snowflake Exporter''';
+    ' COMMENT = ''Home Assistant Snowflake Exporter''');
 EXECUTE IMMEDIATE $create_policy_sql;
 
-ALTER USER IDENTIFIER($user_name) SET NETWORK_POLICY = $policy_name;
+SET alter_user_sql =
+    'ALTER USER ' || $user_name || ' SET NETWORK_POLICY = ' || $policy_name;
+EXECUTE IMMEDIATE $alter_user_sql;
 
 
 -- -----------------------------------------------------------------------------
@@ -113,12 +115,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
     ON ALL TABLES IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT SELECT ON ALL VIEWS IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT USAGE, READ, WRITE ON ALL STAGES IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
-GRANT OPERATE, MONITOR ON ALL PIPES IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
+-- Pipes don't support bulk (ALL/FUTURE) grants. The role owns any pipes it creates;
+-- grant pipes made by other roles individually: GRANT OPERATE, MONITOR ON PIPE <name> TO ROLE ...
 GRANT SELECT ON ALL STREAMS IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT OPERATE, MONITOR ON ALL TASKS IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT USAGE ON ALL FILE FORMATS IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
-
 
 -- -----------------------------------------------------------------------------
 -- 6. Future grants: objects created later in the schema by any role
@@ -127,7 +129,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
     ON FUTURE TABLES IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT USAGE, READ, WRITE ON FUTURE STAGES IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
-GRANT OPERATE, MONITOR ON FUTURE PIPES IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT SELECT ON FUTURE STREAMS IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT OPERATE, MONITOR ON FUTURE TASKS IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);
 GRANT USAGE ON FUTURE SEQUENCES IN SCHEMA IDENTIFIER($fq_schema) TO ROLE IDENTIFIER($role_name);

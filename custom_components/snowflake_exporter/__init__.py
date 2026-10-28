@@ -175,6 +175,18 @@ async def _async_replicate(hass: HomeAssistant, entry: ConfigEntry, _now=None) -
         _LOGGER.exception("Failed to stream entity states to Snowflake")
 
 
+async def _async_setup_and_first_sync(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    client: SnowflakeRestClient,
+    http_session: aiohttp.ClientSession,
+    config_payload: dict[str, Any],
+) -> None:
+    """Create tables first, so the first replication doesn't race the DDL."""
+    await _async_ddl_setup(client, http_session, entry.data, config_payload)
+    await _async_replicate(hass, entry)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
@@ -218,7 +230,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         },
     }
     hass.async_create_task(
-        _async_ddl_setup(client, http_session, data, config_payload)
+        _async_setup_and_first_sync(hass, entry, client, http_session, config_payload)
     )
 
     # Registry tables: sync now, then again shortly after any registry change
@@ -240,9 +252,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.async_on_unload(hass.bus.async_listen(event_type, _on_registry_updated))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Run first replication immediately
-    await _async_replicate(hass, entry)
 
     # Schedule periodic replication
     interval = data.get(CONF_SYNC_INTERVAL, DEFAULT_SYNC_INTERVAL)

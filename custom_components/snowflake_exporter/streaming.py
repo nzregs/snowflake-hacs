@@ -30,7 +30,10 @@ class SnowflakeRestClient:
         self._private_key = load_pem_private_key(
             private_key_pem.encode(), password=None
         )
-        self._account_url = f"https://{account}.snowflakecomputing.com"
+        # Hostnames can't contain underscores, so Snowflake uses hyphens in the URL
+        self._account_url = (
+            f"https://{account.lower().replace('_', '-')}.snowflakecomputing.com"
+        )
         self._ingest_host: str | None = None
         self._scoped_token: str | None = None
         self._token_expires: float = 0
