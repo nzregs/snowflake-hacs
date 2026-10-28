@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import Any
@@ -13,7 +12,8 @@ import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, __version__ as HA_VERSION
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
@@ -25,23 +25,18 @@ from .const import (
     CONF_SYNC_MODE,
     DEFAULT_SYNC_INTERVAL,
     DOMAIN,
-    IDENTIFIER_FIELDS,
-    IDENTIFIER_PATTERN,
     SYNC_MODE_ALL,
 )
-from .exporter import async_write_entity_states
+from .exporter import async_write_entity_states, async_write_registry, fqn
+from .registry import REGISTRY_EVENTS, collect_registry
 from .streaming import SnowflakeRestClient
 
 PLATFORMS = [Platform.SENSOR]
 
+# Registry events arrive in bursts (e.g. at startup), so wait for them to settle
+REGISTRY_SYNC_COOLDOWN = 30
+
 _LOGGER = logging.getLogger(__name__)
-
-
-def _fqn(data: dict[str, Any], table: str) -> str:
-    for field in IDENTIFIER_FIELDS:
-        if not re.fullmatch(IDENTIFIER_PATTERN, data[field]):
-            raise ValueError(f"Invalid Snowflake identifier for {field}: {data[field]!r}")
-    return f"{data['database']}.{data['schema']}.{table}"
 
 
 def _collect_states(hass: HomeAssistant, entry: ConfigEntry) -> list[dict[str, Any]]:
@@ -78,8 +73,8 @@ async def _async_ddl_setup(
     ha_config_payload: dict[str, Any],
 ) -> None:
     """Create tables and write HA config via SQL API (non-blocking)."""
-    config_table = _fqn(data, "HA_CONFIGURATION")
-    states_table = _fqn(data, "HA_ENTITY_STATES")
+    config_table = fqn(data, "HA_CONFIGURATION")
+    states_table = fqn(data, "HA_ENTITY_STATES")
 
     try:
         await client.execute_sql(
@@ -129,6 +124,22 @@ async def _async_ddl_setup(
         _LOGGER.info("Ensured HA_ENTITY_STATES table exists")
     except Exception:
         _LOGGER.exception("Failed to create HA_ENTITY_STATES table")
+
+
+async def _async_sync_registry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if not entry_data:
+        return
+    try:
+        counts = await async_write_registry(
+            entry_data["client"],
+            entry_data["http_session"],
+            entry.data,
+            collect_registry(hass, entry),
+        )
+        _LOGGER.info("Synced registry tables to Snowflake: %s", counts)
+    except Exception:
+        _LOGGER.exception("Failed to sync registry tables to Snowflake")
 
 
 async def _async_replicate(hass: HomeAssistant, entry: ConfigEntry, _now=None) -> None:
@@ -209,6 +220,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.async_create_task(
         _async_ddl_setup(client, http_session, data, config_payload)
     )
+
+    # Registry tables: sync now, then again shortly after any registry change
+    hass.async_create_task(_async_sync_registry(hass, entry))
+    debouncer = Debouncer(
+        hass,
+        _LOGGER,
+        cooldown=REGISTRY_SYNC_COOLDOWN,
+        immediate=False,
+        function=partial(_async_sync_registry, hass, entry),
+    )
+    entry.async_on_unload(debouncer.async_cancel)
+
+    @callback
+    def _on_registry_updated(_event: Event) -> None:
+        hass.async_create_task(debouncer.async_call())
+
+    for event_type in REGISTRY_EVENTS:
+        entry.async_on_unload(hass.bus.async_listen(event_type, _on_registry_updated))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

@@ -65,8 +65,12 @@ class SnowflakeRestClient:
         database: str | None = None,
         schema: str | None = None,
         warehouse: str | None = None,
+        bindings: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
-        """Execute a SQL statement via the Snowflake SQL API. Returns the response JSON."""
+        """Execute a SQL statement via the Snowflake SQL API. Returns the response JSON.
+
+        bindings maps "1", "2", ... to {"type": ..., "value": ...} for each ? placeholder.
+        """
         jwt_token = self._generate_jwt()
         url = f"{self._account_url}/api/v2/statements"
         body: dict[str, Any] = {"statement": statement, "timeout": 60}
@@ -76,6 +80,8 @@ class SnowflakeRestClient:
             body["schema"] = schema
         if warehouse:
             body["warehouse"] = warehouse
+        if bindings:
+            body["bindings"] = bindings
         headers = {
             "Authorization": f"Bearer {jwt_token}",
             "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",

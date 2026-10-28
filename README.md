@@ -8,10 +8,26 @@
 
 The Snowflake Exporter custom integration replicates Home Assistant entity states to a Snowflake table on a schedule, using key-pair authentication, the Snowflake SQL API, and Snowpipe Streaming.
 
-It creates two tables in your chosen database and schema:
+It creates these tables in your chosen database and schema:
 
 - **HA_CONFIGURATION** – your Home Assistant instance details (one row per home)
 - **HA_ENTITY_STATES** – entity state, attributes, `last_changed` and `last_updated`, appended on every sync
+- **HA_ENTITIES** – one row per synced entity: integration, device, area, name, device class, unit, category and labels
+- **HA_DEVICES** – one row per device behind those entities (and any parent hubs or bridges): manufacturer, model, serial number, firmware, MAC address, IP address (when the device's configuration URL contains one), parent device and integrations
+- **HA_AREAS** – one row per area used by those entities and devices, with its floor
+
+The three registry tables are kept in step with Home Assistant: they are refreshed at startup and about 30 seconds after any entity, device, area or floor change, and rows for removed items are deleted. Join them to `HA_ENTITY_STATES` on `entity_id`, `device_id` and `area_id`. For example:
+
+```sql
+SELECT s.entity_id, s.state, s.last_updated,
+       e.device_class, e.integration,
+       d.manufacturer, d.model, d.mac_address,
+       a.name AS area, a.floor_name
+FROM HA_ENTITY_STATES s
+JOIN HA_ENTITIES e ON e.entity_id = s.entity_id
+LEFT JOIN HA_DEVICES d ON d.device_id = e.device_id
+LEFT JOIN HA_AREAS a ON a.area_id = e.area_id;
+```
 
 It also sets up 8 sensors to monitor replication:
 
@@ -118,6 +134,9 @@ To change the connection settings, sync interval or entity selection:
 
 > [!WARNING]
 > **Connection details and errors are visible in Home Assistant.** The **Replication Mode** sensor shows your account, database, schema and warehouse as attributes, and **Previous Replication Message** can contain raw Snowflake error text. Both are visible to every Home Assistant user and are kept in history.
+
+> [!WARNING]
+> **Device identifiers are sent to Snowflake.** `HA_DEVICES` stores device MAC addresses, IP addresses, serial numbers and configuration URLs for the synced entities. Treat the table as sensitive network inventory.
 
 > [!NOTE]
 > In **"All entities"** mode, every attribute of every entity is exported apart from `access_token` and `entity_picture`. That can include GPS coordinates from `device_tracker` and `person` entities. Use **"Select specific entities"** if you don't want everything exported.
